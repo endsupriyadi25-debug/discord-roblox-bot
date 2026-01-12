@@ -5,7 +5,7 @@
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const express = require('express');
-const crypto = require('crypto');
+const bodyParser = require('body-parser');
 const fs = require('fs');
 
 const client = new Client({
@@ -24,236 +24,186 @@ let verifiedUsers = new Map();
 
 // Load verified users from file
 if (fs.existsSync(VERIFIED_FILE)) {
-    const data = JSON.parse(fs.readFileSync(VERIFIED_FILE, 'utf8'));
-    verifiedUsers = new Map(Object.entries(data));
-    console.log(`📁 Loaded ${verifiedUsers.size} verified users from database`);
+    const data = fs.readFileSync(VERIFIED_FILE, 'utf8');
+    verifiedUsers = new Map(Object.entries(JSON.parse(data)));
+    console.log(`✅ Loaded ${verifiedUsers.size} verified users from database`);
 }
 
 // Save verified users to file
 function saveVerifiedUsers() {
-    const data = Object.fromEntries(verifiedUsers);
-    fs.writeFileSync(VERIFIED_FILE, JSON.stringify(data, null, 2));
+    const obj = Object.fromEntries(verifiedUsers);
+    fs.writeFileSync(VERIFIED_FILE, JSON.stringify(obj, null, 2));
 }
 
-// ✅ GANTI INI DENGAN DATA KAMU!
-const DISCORD_TOKEN = 'MTQ2MDI0OTU4MDg3MTYxODczMw.GJ7DJz.FM9oCjwEsASo4aa8v_p_KpX3BoEf1sJn-sSWio';
-const CLIENT_ID = '1460249580871618733';
-const GUILD_ID = '1460113407599710345';
-const VERIFIED_ROLE_ID = '1460255823690469471';
+// ✅ ENVIRONMENT VARIABLES - Railway akan inject values dari Variables tab
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID;
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
 // Generate random verification code
 function generateCode() {
-    return crypto.randomBytes(3).toString('hex').toUpperCase();
+    return crypto.randomBytes(4).toString('hex').toUpperCase();
 }
 
 // Slash command: /verify
 const commands = [
     new SlashCommandBuilder()
         .setName('verify')
-        .setDescription('Link your Roblox account to Discord (one-time only)')
-        .toJSON()
-];
+        .setDescription('Link your Roblox account to Discord')
+        .addStringOption(option =>
+            option.setName('username')
+                .setDescription('Your Roblox username')
+                .setRequired(true)
+        )
+].map(command => command.toJSON());
 
-// Register slash commands
+// Register commands
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 (async () => {
     try {
         console.log('🔄 Registering slash commands...');
-        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+        await rest.put(
+            Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+            { body: commands }
+        );
         console.log('✅ Slash commands registered!');
     } catch (error) {
         console.error('❌ Error registering commands:', error);
     }
 })();
 
-client.on('ready', () => {
-    console.log(`✅ Bot logged in as ${client.user.tag}`);
-    console.log(`📊 Total verified users: ${verifiedUsers.size}`);
+// Discord bot ready
+client.once('ready', () => {
+    console.log(`✅ Discord bot logged in as ${client.user.tag}`);
 });
 
 // Handle /verify command
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isCommand()) return;
-
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+    
     if (interaction.commandName === 'verify') {
-        const userId = interaction.user.id;
-
-        // ✅ CHECK IF ALREADY VERIFIED (PERMANENT)
-        if (verifiedUsers.has(userId)) {
-            const userData = JSON.parse(verifiedUsers.get(userId));
-            await interaction.reply({
-                content: `✅ **You are already verified!**\n\n` +
-                         `🎮 Roblox: **${userData.robloxUsername}**\n` +
-                         `📅 Verified: <t:${Math.floor(userData.verifiedAt / 1000)}:R>\n\n` +
-                         `⚠️ Each Discord account can only verify once.`,
+        const robloxUsername = interaction.options.getString('username');
+        const discordId = interaction.user.id;
+        
+        // Check if already verified
+        if (verifiedUsers.has(discordId)) {
+            return interaction.reply({
+                content: `❌ You are already verified as **${verifiedUsers.get(discordId)}**!`,
                 ephemeral: true
             });
-            console.log(`⚠️ ${interaction.user.username} tried to verify again (already verified)`);
-            return;
         }
-
-        // ✅ CHECK IF PENDING CODE EXISTS
-        let existingCode = null;
-        for (const [code, data] of verificationCodes.entries()) {
-            if (data.discordId === userId) {
-                existingCode = code;
-                break;
-            }
-        }
-
-        if (existingCode) {
-            // User already has pending code
-            await interaction.reply({
-                content: `🔑 **Your Verification Code:** \`${existingCode}\`\n\n` +
-                         `📌 You already have an active code.\n` +
-                         `💡 Enter this code in the Roblox game within 10 minutes.\n` +
-                         `⚠️ This code can only be used once.`,
-                ephemeral: true
-            });
-            console.log(`ℹ️ ${interaction.user.username} requested code again: ${existingCode}`);
-            return;
-        }
-
-        // Generate new code
+        
+        // Generate verification code
         const code = generateCode();
-        verificationCodes.set(code, {
-            discordId: userId,
-            username: interaction.user.username,
+        verificationCodes.set(discordId, {
+            code: code,
+            robloxUsername: robloxUsername,
             timestamp: Date.now()
         });
-
-        // Auto-expire after 10 minutes
-        setTimeout(() => {
-            if (verificationCodes.has(code)) {
-                verificationCodes.delete(code);
-                console.log(`⏱️ Code ${code} expired`);
-            }
-        }, 10 * 60 * 1000);
-
+        
+        // Send verification instructions
         await interaction.reply({
-            content: `🔑 **Your Verification Code:** \`${code}\`\n\n` +
-                     `📌 Enter this code in the Roblox game within **10 minutes**.\n` +
-                     `💡 Open the "Discord Verify" GUI in game and paste this code.\n` +
-                     `🎁 Reward: **1000 Money** after verification!\n\n` +
-                     `⚠️ This code can only be used once and will expire in 10 minutes.`,
+            content: `✅ **Verification Started!**\n\n` +
+                     `🎮 Roblox Username: **${robloxUsername}**\n` +
+                     `🔐 Your Verification Code: \`${code}\`\n\n` +
+                     `📋 **Instructions:**\n` +
+                     `1. Join our Roblox game\n` +
+                     `2. Look for the verification terminal\n` +
+                     `3. Enter this code: \`${code}\`\n` +
+                     `4. Click "Verify"\n\n` +
+                     `⏰ Code expires in 10 minutes!`,
             ephemeral: true
         });
-
-        console.log(`🔑 Generated code ${code} for ${interaction.user.username} (${userId})`);
+        
+        // Auto-delete code after 10 minutes
+        setTimeout(() => {
+            verificationCodes.delete(discordId);
+        }, 10 * 60 * 1000);
     }
 });
 
-// API endpoint for Roblox to verify code
-app.post('/verify', async (req, res) => {
-    const { code, robloxUserId, robloxUsername } = req.body;
+// ============================================
+// ROBLOX GAME API ENDPOINT
+// ============================================
 
-    console.log(`📥 Verify request: Code=${code}, RobloxUser=${robloxUsername} (${robloxUserId})`);
-
-    if (!code || !robloxUserId || !robloxUsername) {
-        return res.status(400).json({ success: false, error: 'Missing parameters' });
+// Endpoint: Roblox game checks verification code
+app.post('/verify', (req, res) => {
+    const { discordId, code } = req.body;
+    
+    if (!discordId || !code) {
+        return res.json({ success: false, message: 'Missing discordId or code' });
     }
-
-    // ✅ CHECK IF CODE EXISTS
-    if (!verificationCodes.has(code)) {
-        console.log(`❌ Invalid or expired code: ${code}`);
-        return res.json({ success: false, error: 'Invalid or expired code' });
+    
+    const verification = verificationCodes.get(discordId);
+    
+    if (!verification) {
+        return res.json({ success: false, message: 'No verification request found' });
     }
-
-    const verifyData = verificationCodes.get(code);
-    const discordId = verifyData.discordId;
-
-    // ✅ CHECK IF DISCORD ALREADY VERIFIED
-    if (verifiedUsers.has(discordId)) {
-        verificationCodes.delete(code);
-        console.log(`❌ Discord user already verified: ${discordId}`);
-        return res.json({ success: false, error: 'This Discord account is already verified' });
+    
+    if (verification.code !== code.toUpperCase()) {
+        return res.json({ success: false, message: 'Invalid code' });
     }
-
-    // ✅ CHECK IF ROBLOX ALREADY VERIFIED
-    for (const [id, dataStr] of verifiedUsers.entries()) {
-        const data = JSON.parse(dataStr);
-        if (data.robloxUserId === robloxUserId) {
-            verificationCodes.delete(code);
-            console.log(`❌ Roblox account already verified: ${robloxUsername}`);
-            return res.json({ success: false, error: 'This Roblox account is already verified' });
-        }
+    
+    // Code is valid - grant verified role
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) {
+        return res.json({ success: false, message: 'Guild not found' });
     }
-
-    try {
-        // Get Discord guild and member
-        const guild = await client.guilds.fetch(GUILD_ID);
-        const member = await guild.members.fetch(discordId);
-
-        // Add verified role
-        await member.roles.add(VERIFIED_ROLE_ID);
-
-        // ✅ SAVE VERIFICATION (PERMANENT)
-        const verificationData = {
-            robloxUserId: robloxUserId,
-            robloxUsername: robloxUsername,
-            discordUsername: verifyData.username,
-            verifiedAt: Date.now()
-        };
-
-        verifiedUsers.set(discordId, JSON.stringify(verificationData));
-        saveVerifiedUsers(); // Save to file
-
-        // Remove used code
-        verificationCodes.delete(code);
-
-        console.log(`✅ VERIFIED: ${robloxUsername} (${robloxUserId}) ↔ ${verifyData.username} (${discordId})`);
-
-        res.json({
-            success: true,
-            discordUsername: verifyData.username,
-            reward: 1000
+    
+    guild.members.fetch(discordId)
+        .then(member => {
+            member.roles.add(VERIFIED_ROLE_ID)
+                .then(() => {
+                    // Save to permanent verified users
+                    verifiedUsers.set(discordId, verification.robloxUsername);
+                    saveVerifiedUsers();
+                    verificationCodes.delete(discordId);
+                    
+                    console.log(`✅ Verified: ${verification.robloxUsername} (${discordId})`);
+                    res.json({
+                        success: true,
+                        message: 'Verification successful!',
+                        robloxUsername: verification.robloxUsername
+                    });
+                })
+                .catch(err => {
+                    console.error('❌ Error adding role:', err);
+                    res.json({ success: false, message: 'Failed to add role' });
+                });
+        })
+        .catch(err => {
+            console.error('❌ Member not found:', err);
+            res.json({ success: false, message: 'Member not found in server' });
         });
-
-    } catch (error) {
-        console.error('❌ Verification error:', error);
-        res.status(500).json({ success: false, error: 'Server error' });
-    }
 });
 
-// Check if Discord user is verified
-app.get('/check/discord/:discordId', (req, res) => {
+// Endpoint: Check if Discord user is already verified
+app.get('/check/:discordId', (req, res) => {
     const discordId = req.params.discordId;
-    const verified = verifiedUsers.has(discordId);
+    const isVerified = verifiedUsers.has(discordId);
     
-    res.json({ 
-        verified: verified,
-        data: verified ? JSON.parse(verifiedUsers.get(discordId)) : null
+    res.json({
+        verified: isVerified,
+        robloxUsername: isVerified ? verifiedUsers.get(discordId) : null
     });
-});
-
-// Check if Roblox user is verified
-app.get('/check/roblox/:robloxUserId', (req, res) => {
-    const robloxUserId = parseInt(req.params.robloxUserId);
-    
-    for (const [discordId, dataStr] of verifiedUsers.entries()) {
-        const data = JSON.parse(dataStr);
-        if (data.robloxUserId === robloxUserId) {
-            return res.json({ verified: true, data: data });
-        }
-    }
-    
-    res.json({ verified: false, data: null });
 });
 
 // Health check
 app.get('/', (req, res) => {
-    res.json({ 
+    res.json({
         status: 'online',
-        verified_users: verifiedUsers.size,
-        pending_codes: verificationCodes.size
+        bot: client.user ? client.user.tag : 'not ready',
+        verifiedUsers: verifiedUsers.size,
+        pendingVerifications: verificationCodes.size
     });
 });
 
 // Start Express server
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`✅ API server running on http://localhost:${PORT}`);
+    console.log(`✅ Express server running on port ${PORT}`);
 });
 
-// Start Discord bot
+// Login to Discord
 client.login(DISCORD_TOKEN);
